@@ -101,6 +101,8 @@ json::value User::GetSiteNames()
     while (iter != array.end())
     {
         retValue[index] = json::value(iter->first);
+        index++;
+        iter++;
     }
 
     m_LastInteraction = std::chrono::system_clock::now();
@@ -132,7 +134,7 @@ void User::WriteToDB()
 
 int main()
 {
-    URI              url(L"http://isaacmorton.ca:1111");
+    URI              url(L"https://isaacmorton.ca:1111");
     HTTPServer       Server(url);
     leveldb::DB*     db;
     leveldb::Options options;
@@ -141,10 +143,10 @@ int main()
     assert(status.ok());
 
     std::unordered_map<std::string, User> OnlineUsers;
-    std::mutex g_pages_mutex;
+    std::mutex                            g_pages_mutex;
 
     auto POSTHandler = [&](HTTPRequest request) {
-        //std::lock_guard<std::mutex> guard(g_pages_mutex);
+        std::lock_guard<std::mutex> guard(g_pages_mutex);
         request.content_ready().wait();
         std::wcout << request.to_string() << std::endl;
         //std::wcout << request.extract_utf16string().get() << std::endl;
@@ -155,7 +157,8 @@ int main()
         {
             Payload = request.extract_json(true).get();
         }
-        catch (...){}
+        catch (...)
+        {}
 
         std::string email;
         std::string pass;
@@ -177,7 +180,7 @@ int main()
             {
                 user = OnlineUsers.at(email);
             }
-            else if (Command == L"/login") //load user from db if present
+            else if (Command == L"/login")   //load user from db if present
             {
                 if (user.LoadFromDB(email).IsNotFound())
                 {
@@ -185,7 +188,7 @@ int main()
                     return;
                 }
 
-                auto str = ToA(user.GetUserData().serialize());
+                auto str           = ToA(user.GetUserData().serialize());
                 OnlineUsers[email] = user;
                 request.reply(200).wait();
             }
@@ -209,15 +212,15 @@ int main()
             }
             if (Command == L"/editPassword")
             {
-                std::wstring SiteName = Payload.at(L"sitename").as_string();
-                std::wstring SitePassword = Payload.at(L"password").as_string();
+                std::wstring SiteName                                        = Payload.at(L"sitename").as_string();
+                std::wstring SitePassword                                    = Payload.at(L"password").as_string();
                 user.GetUserData().at(L"sites").at(SiteName).at(L"password") = json::value(SitePassword);
                 request.reply(200).wait();
             }
             if (Command == L"/editUsername")
             {
-                std::wstring SiteName = Payload.at(L"sitename").as_string();
-                std::wstring SiteUsername = Payload.at(L"username").as_string();
+                std::wstring SiteName                                        = Payload.at(L"sitename").as_string();
+                std::wstring SiteUsername                                    = Payload.at(L"username").as_string();
                 user.GetUserData().at(L"sites").at(SiteName).at(L"username") = json::value(SiteUsername);
                 request.reply(200).wait();
             }
@@ -243,8 +246,8 @@ int main()
             }
             if (Command == L"/requestCombination")
             {
-                std::wstring SiteName           = Payload.at(L"sitename").as_string();
-                json::value& UserData           = user.GetUserData();
+                std::wstring SiteName = Payload.at(L"sitename").as_string();
+                json::value& UserData = user.GetUserData();
                 if (UserData.at(L"sites").has_field(SiteName))
                 {
                     std::wstring h = UserData.at(L"sites").at(SiteName).serialize();
@@ -263,11 +266,22 @@ int main()
         {
             email = ToA(Payload.at(L"email").as_string());
 
-            User user(db);
-            user.SetEmail(email);
-            user.SetUserData(Payload);
-            OnlineUsers[email] = user;
-            request.reply(200).wait();
+            std::string     value;
+            leveldb::Slice  key = email;
+            leveldb::Status s   = db->Get(leveldb::ReadOptions(), email, &value);
+
+            if (s.ok() || OnlineUsers.find(email) != OnlineUsers.end())   //user exists, return with error code
+            {
+                request.reply(401).wait();
+            }
+            else
+            {
+                User user(db);
+                user.SetEmail(email);
+                user.SetUserData(Payload);
+                OnlineUsers[email] = user;
+                request.reply(200).wait();
+            }
             return;
         }
 
@@ -279,19 +293,19 @@ int main()
 
     while (true)
     {
-        //std::lock_guard<std::mutex> guard(g_pages_mutex);
-        //auto iter = OnlineUsers.begin();
-        //while (iter != OnlineUsers.end())
-        //{
-        //    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - iter->second.GetLastInteraction()).count() >= 1000)
-        //    {
-        //        iter = OnlineUsers.erase(iter);
-        //    }
-        //    else
-        //    {
-        //        iter++;
-        //    }
-        //}
+        std::lock_guard<std::mutex> guard(g_pages_mutex);
+        auto                        iter = OnlineUsers.begin();
+        while (iter != OnlineUsers.end())
+        {
+            if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - iter->second.GetLastInteraction()).count() >= 1000)
+            {
+                iter = OnlineUsers.erase(iter);
+            }
+            else
+            {
+                iter++;
+            }
+        }
     }
 
     Server.close().wait();
